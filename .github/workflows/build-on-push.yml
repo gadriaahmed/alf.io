@@ -1,80 +1,65 @@
 name: build
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
 
 jobs:
-    build:
-        runs-on: ubuntu-latest
-        strategy:
-            matrix:
-                postgresql: ['10', '15','16']
-        steps:
-            - uses: actions/checkout@v4
-            - uses: actions/cache@v4
-              with:
-                  path: ~/.gradle/caches
-                  key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle') }}
-                  restore-keys: |
-                      ${{ runner.os }}-gradle-
-            - uses: actions/cache@v3
-              with:
-                  path: ~/.gradle/wrapper
-                  key: ${{ runner.os }}-gradle-wrapper-${{ hashFiles('**/gradlew') }}
-                  restore-keys: |
-                      ${{ runner.os }}-gradlew-
-            - name: Set up JDK
-              uses: actions/setup-java@v4
-              with:
-                  java-version: 17
-                  distribution: temurin
-            - name: Build with Gradle
-              run: ./gradlew build distribution jacocoTestReport -Dpgsql.version=${{ matrix.postgresql }}
-            - name: Upload coverage to Codecov
-              if: ${{ matrix.postgresql == '16'}}
-              uses: codecov/codecov-action@v5
-              with:
-                token: ${{ secrets.CODECOV_TOKEN }}
-            - name: Upload test results to Codecov
-              if: ${{ !cancelled() && matrix.postgresql == '16'}}
-              uses: codecov/test-results-action@v1
-              with:
-                  token: ${{ secrets.CODECOV_TOKEN }}
-            - name: 'Upload Build'
-              if: ${{ matrix.postgresql == '16' }}
-              uses: actions/upload-artifact@v4
-              with:
-                  name: dist
-                  path: build
-                  retention-days: 5
-    push_image_ecr:
-        runs-on: ubuntu-latest
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        needs: build
-        name: Push image to ECR
-        permissions:
-            id-token: write
-            contents: read
-        steps:
-            - name: Download artifacts
-              uses: actions/download-artifact@v4
-              with:
-                  name: dist
-            - name: Configure AWS credentials
-              uses: aws-actions/configure-aws-credentials@v4
-              with:
-                  role-to-assume: arn:aws:iam::783879612311:role/alfio-github-ecr-push
-                  aws-region: eu-central-1
-            - name: Login to Amazon ECR
-              id: ecr-login
-              uses: aws-actions/amazon-ecr-login@v2
-            - name: Set up Docker Buildx
-              uses: docker/setup-buildx-action@v3
-            - name: Build and push Docker image
-              uses: docker/build-push-action@v6
-              with:
-                  context: ./dockerize
-                  push: true
-                  platforms: linux/amd64
-                  tags: |
-                      ${{ steps.ecr-login.outputs.registry }}/alfio:${{ github.sha }}
-                      ${{ steps.ecr-login.outputs.registry }}/alfio:latest
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: temurin
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradlew') }}
+
+      - name: Build Docker context
+        run: ./gradlew distribution -Dpgsql.version=16
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push'
+        with:
+          name: dist
+          path: build
+          retention-days: 1
+
+  push_image_ecr:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::783879612311:role/alfio-github-ecr-push
+          aws-region: eu-central-1
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr-login
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./dockerize
+          push: true
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/alfio:${{ github.sha }}
+            ${{ steps.ecr-login.outputs.registry }}/alfio:latest
